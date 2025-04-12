@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual environment folders
+.venv/
+venv/
+env/
+
+# FastF1 cache
+dataFileDesktop/
+
+# Output files (data, logs, etc.)
+*.csv
+*.tsv
+*.log
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+
+# macOS metadata
+.DS_Store
+
+# Pytest / coverage
+.coverage
+.cache/
+.pytest_cache/
+
+# MyPy / static analysis
+.mypy_cache/
+.dmypy.json
+.pyre/
+
+# Environment variables
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
