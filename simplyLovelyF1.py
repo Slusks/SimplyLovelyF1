@@ -238,8 +238,8 @@ def F1_API_Data_Collection(years=None, sessions_to_collect=None, cache_path=None
                     except Exception as e:
                         print(f"⚠️ Skipped {year} {location} {session_type}: {e}")
                         skipped_races.append(f"{year} - {location} - {session_type}: {str(e)}")
-                    print("Sleeping for 4 seconds between API calls...")
-                    time.sleep(4)
+                    print("Sleeping for 3 seconds between API calls...")
+                    time.sleep(3)
                 
                 if race_success:
                     successful_races.add(f"{year} - {location}")
@@ -261,63 +261,85 @@ def F1_API_Data_Collection(years=None, sessions_to_collect=None, cache_path=None
                     
         except Exception as e:
             print(f"⚠️ Skipped year {year}: {e}")
-            print("Sleeping for 4 seconds before next year...")
-            time.sleep(4)
+            print("Sleeping for 3 seconds before next year...")
+            time.sleep(3)
 
     # Concatenate all collected lap data
     if all_laps:
         df = pd.concat(all_laps, ignore_index=True)
-        df = df[['Year', 'Track', 'Session', 'Team', 'Driver', 'Rainfall', 'TrackTemperature', 'LapNumber', 'LapTime']]
         
-        # Create separate DataFrames for practice and race sessions
-        practice_df = df[df['Session'].isin(['FP1', 'FP2', 'FP3'])].copy()
-        race_df = df[df['Session'] == 'Race'].copy()
+        # Ensure all required columns exist
+        required_columns = ['Year', 'Track', 'Session', 'Team', 'Driver', 'Rainfall', 'TrackTemperature', 'LapNumber', 'LapTime']
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = pd.NA
         
-        # Rename LapTime columns
-        practice_df = practice_df.rename(columns={'LapTime': 'PracticeLapTime'})
-        race_df = race_df.rename(columns={'LapTime': 'RaceLapTime'})
+        # Reorder columns
+        df = df[required_columns]
         
-        # Drop Session column as it's no longer needed
-        practice_df = practice_df.drop(columns=['Session'])
-        race_df = race_df.drop(columns=['Session'])
+        # Create separate DataFrames for each session type
+        session_dfs = {}
+        for session_type in ['FP1', 'FP2', 'FP3', 'Race']:
+            session_df = df[df['Session'] == session_type].copy()
+            if not session_df.empty:
+                session_df = session_df.rename(columns={'LapTime': f'{session_type} Lap Time'})
+                session_dfs[session_type] = session_df
         
-        # Merge practice and race data
-        # First, get unique combinations of Year, Track, Driver, and LapNumber from both DataFrames
+        if not session_dfs:
+            print("\n❌ No valid session data found.")
+            return successful_races, failed_races, skipped_races, None
+        
+        # Get all unique combinations of Year, Track, Team, Driver, and LapNumber
         all_combinations = pd.concat([
-            practice_df[['Year', 'Track', 'Driver', 'LapNumber']],
-            race_df[['Year', 'Track', 'Driver', 'LapNumber']]
+            df[['Year', 'Track', 'Team', 'Driver', 'LapNumber']]
+            for df in session_dfs.values()
         ]).drop_duplicates()
         
-        # Merge with practice data
-        merged_df = all_combinations.merge(
-            practice_df,
-            on=['Year', 'Track', 'Driver', 'LapNumber'],
-            how='left'
-        )
+        # Start with the base combinations
+        merged_df = all_combinations.copy()
         
-        # Merge with race data
-        merged_df = merged_df.merge(
-            race_df,
-            on=['Year', 'Track', 'Driver', 'LapNumber'],
-            how='left'
-        )
+        # Merge with each session DataFrame
+        for session_type, session_df in session_dfs.items():
+            # Select only the columns we need for this merge
+            merge_columns = ['Year', 'Track', 'Team', 'Driver', 'LapNumber', 
+                           f'{session_type} Lap Time', 'Rainfall', 'TrackTemperature']
+            
+            # Ensure all columns exist
+            for col in merge_columns:
+                if col not in session_df.columns:
+                    session_df[col] = pd.NA
+            
+            # Merge with the main DataFrame
+            merged_df = merged_df.merge(
+                session_df[merge_columns],
+                on=['Year', 'Track', 'Team', 'Driver', 'LapNumber'],
+                how='left'
+            )
         
-        # Reorder columns for better readability
-        merged_df = merged_df[[
-            'Year', 'Track', 'Driver', 'Team', 'LapNumber',
-            'PracticeLapTime', 'RaceLapTime',
+        # Define the final column order
+        final_columns = [
+            'Year', 'Track', 'Team', 'Driver', 'LapNumber',
+            'FP1 Lap Time', 'FP2 Lap Time', 'FP3 Lap Time', 'Race Lap Time',
             'Rainfall', 'TrackTemperature'
-        ]]
+        ]
+        
+        # Ensure all columns exist
+        for col in final_columns:
+            if col not in merged_df.columns:
+                merged_df[col] = pd.NA
+        
+        # Reorder columns
+        merged_df = merged_df[final_columns]
         
         # Determine output filename
-        output_file = f'f1_lap_times_{min(years)}-{max(years)}.csv'
+        output_file = f'f1_lapData_{min(years)}-{max(years)}.csv'
         
         # Check if file exists and append if it does
         if os.path.exists(output_file):
             existing_df = pd.read_csv(output_file)
             combined_df = pd.concat([existing_df, merged_df], ignore_index=True)
-            # Remove duplicates based on Year, Track, Driver, and LapNumber
-            combined_df = combined_df.drop_duplicates(subset=['Year', 'Track', 'Driver', 'LapNumber'])
+            # Remove duplicates based on Year, Track, Team, Driver, and LapNumber
+            combined_df = combined_df.drop_duplicates(subset=['Year', 'Track', 'Team', 'Driver', 'LapNumber'])
             combined_df.to_csv(output_file, index=False)
             print(f"\n✅ Data appended to {output_file}")
         else:
@@ -334,6 +356,93 @@ def F1_API_Data_Collection(years=None, sessions_to_collect=None, cache_path=None
 
     return successful_races, failed_races, skipped_races, output_file
 
+def combine_f1_lap_data(dataframes):
+    """
+    Combine multiple F1 session DataFrames into a single DataFrame with separate columns for each session type.
+    
+    Parameters:
+    -----------
+    dataframes : list of pandas.DataFrame
+        List of DataFrames containing F1 lap data from different sessions
+    
+    Returns:
+    --------
+    pandas.DataFrame
+        Combined DataFrame with separate columns for each session type
+    """
+    if not dataframes:
+        print("❌ No dataframes provided")
+        return None
+    
+    # Create a dictionary to store DataFrames by session type
+    session_dfs = {}
+    
+    # Process each input DataFrame
+    for df in dataframes:
+        # Ensure all required columns exist
+        required_columns = ['Year', 'Track', 'Team', 'Driver', 'LapNumber', 'LapTime', 'Rainfall', 'TrackTemperature', 'Session']
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        # Get the session type from the first row (assuming all rows have the same session type)
+        session_type = df['Session'].iloc[0] if not df.empty else None
+        
+        if session_type:
+            # Rename LapTime column to include session type
+            df = df.rename(columns={'LapTime': f'{session_type} Lap Time'})
+            
+            # Store the DataFrame in the dictionary
+            session_dfs[session_type] = df
+    
+    if not session_dfs:
+        print("❌ No valid session data found")
+        return None
+    
+    # Get all unique combinations of Year, Track, Team, Driver, and LapNumber
+    all_combinations = pd.concat([
+        df[['Year', 'Track', 'Team', 'Driver', 'LapNumber']]
+        for df in session_dfs.values()
+    ]).drop_duplicates()
+    
+    # Start with the base combinations
+    merged_df = all_combinations.copy()
+    
+    # Merge with each session DataFrame
+    for session_type, df in session_dfs.items():
+        # Select only the columns we need for this merge
+        merge_columns = ['Year', 'Track', 'Team', 'Driver', 'LapNumber', 
+                        f'{session_type} Lap Time', 'Rainfall', 'TrackTemperature']
+        
+        # Ensure all columns exist
+        for col in merge_columns:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        # Merge with the main DataFrame
+        merged_df = merged_df.merge(
+            df[merge_columns],
+            on=['Year', 'Track', 'Team', 'Driver', 'LapNumber'],
+            how='left'
+        )
+    
+    # Define the final column order
+    final_columns = [
+        'Year', 'Track', 'Team', 'Driver', 'LapNumber',
+        'FP1 Lap Time', 'FP2 Lap Time', 'FP3 Lap Time', 'Race Lap Time',
+        'Rainfall', 'TrackTemperature'
+    ]
+    
+    # Ensure all columns exist
+    for col in final_columns:
+        if col not in merged_df.columns:
+            merged_df[col] = pd.NA
+    
+    # Reorder columns
+    merged_df = merged_df[final_columns]
+    
+    return merged_df
+
 def combine_practice_and_race_times(years=None):
     """
     Combine practice and race lap times from existing CSV files into a single table.
@@ -348,83 +457,37 @@ def combine_practice_and_race_times(years=None):
     str
         Path to the combined output file
     """
-    # Find all practice and race CSV files
-    practice_files = [f for f in os.listdir('.') if f.startswith('f1_practice_laps_') and f.endswith('.csv')]
-    race_files = [f for f in os.listdir('.') if f.startswith('f1_race_laps_') and f.endswith('.csv')]
+    # Find all F1 lap data CSV files
+    data_files = [f for f in os.listdir('.') if f.startswith('f1_') and f.endswith('_laps_') and f.endswith('.csv')]
     
-    if not practice_files or not race_files:
-        print("❌ No practice or race files found. Please run data collection first.")
+    if not data_files:
+        print("❌ No F1 lap data files found. Please run data collection first.")
         return None
     
-    # Read and combine all practice files
-    practice_dfs = []
-    for file in practice_files:
+    # Read all data files
+    dataframes = []
+    for file in data_files:
         file_years = file.split('_')[-1].replace('.csv', '').split('-')
         if years is None or any(int(y) in years for y in file_years):
             df = pd.read_csv(file)
-            practice_dfs.append(df)
+            dataframes.append(df)
     
-    if not practice_dfs:
-        print("❌ No practice data found for specified years.")
+    if not dataframes:
+        print("❌ No data found for specified years.")
         return None
     
-    practice_df = pd.concat(practice_dfs, ignore_index=True)
+    # Combine the data
+    merged_df = combine_f1_lap_data(dataframes)
     
-    # Read and combine all race files
-    race_dfs = []
-    for file in race_files:
-        file_years = file.split('_')[-1].replace('.csv', '').split('-')
-        if years is None or any(int(y) in years for y in file_years):
-            df = pd.read_csv(file)
-            race_dfs.append(df)
-    
-    if not race_dfs:
-        print("❌ No race data found for specified years.")
+    if merged_df is None:
         return None
-    
-    race_df = pd.concat(race_dfs, ignore_index=True)
-    
-    # Rename LapTime columns
-    practice_df = practice_df.rename(columns={'LapTime': 'PracticeLapTime'})
-    race_df = race_df.rename(columns={'LapTime': 'RaceLapTime'})
-    
-    # Drop Session column as it's no longer needed
-    practice_df = practice_df.drop(columns=['Session'])
-    race_df = race_df.drop(columns=['Session'])
-    
-    # Get unique combinations of Year, Track, Team, Driver,  and LapNumber
-    all_combinations = pd.concat([
-        practice_df[['Year', 'Track', 'Team', 'Driver', 'LapNumber']],
-        race_df[['Year', 'Track', 'Team', 'Driver', 'LapNumber']]
-    ]).drop_duplicates()
-    
-    # Merge with practice data
-    merged_df = all_combinations.merge(
-        practice_df,
-        on=['Year', 'Track', 'Team', 'Driver', 'LapNumber'],
-        how='left'
-    )
-    
-    # Merge with race data
-    merged_df = merged_df.merge(
-        race_df,
-        on=['Year', 'Track', 'Team', 'Driver', 'LapNumber'],
-        how='left'
-    )
-    
-    # Reorder columns for better readability
-    merged_df = merged_df[[
-        'Year', 'Track', 'Team', 'Driver', 'LapNumber',
-        'PracticeLapTime', 'RaceLapTime',
-        'Rainfall', 'TrackTemperature'
-    ]]
     
     # Determine output filename
     if years:
         year_range = f"{min(years)}-{max(years)}"
     else:
         year_range = "all"
-    output_file = f'f1_combined_lap_times_{year_range}.csv'
+    output_file = f'f1_lapData_{year_range}.csv'
     
     # Save the combined data
     merged_df.to_csv(output_file, index=False)
