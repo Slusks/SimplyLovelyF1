@@ -2,6 +2,7 @@ import os
 import fastf1
 import pandas as pd
 import time
+import shutil
 
 def F1_API_Data_Collection(years=None, sessions_to_collect=None, cache_path=None):
     """
@@ -331,8 +332,11 @@ def F1_API_Data_Collection(years=None, sessions_to_collect=None, cache_path=None
         # Reorder columns
         merged_df = merged_df[final_columns]
         
-        # Determine output filename
-        output_file = f'f1_lapData_{min(years)}-{max(years)}.csv'
+        # Determine output filename based on session type
+        if 'Race' in sessions_to_collect:
+            output_file = 'f1_race_laps.csv'
+        else:
+            output_file = 'f1_practice_laps.csv'
         
         # Check if file exists and append if it does
         if os.path.exists(output_file):
@@ -443,6 +447,31 @@ def combine_f1_lap_data(dataframes):
     
     return merged_df
 
+def standardize_team_names(df):
+    """
+    Standardize team names in the DataFrame according to current team names.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame containing F1 data with a 'Team' column
+    
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with standardized team names
+    """
+    team_replacements = {
+        'Racing Point': 'Aston Martin',
+        'Alfa Romeo': 'Kick Sauber',
+        'Alfa Romeo Racing': 'Kick Sauber',
+        'Alpha Tauri': 'RB',
+        'Renault': 'Alpine'
+    }
+    
+    df['Team'] = df['Team'].replace(team_replacements)
+    return df
+
 def combine_practice_and_race_times(years=None):
     """
     Combine practice and race lap times from existing CSV files into a single table.
@@ -457,84 +486,127 @@ def combine_practice_and_race_times(years=None):
     str
         Path to the combined output file
     """
-    # Find all F1 lap data CSV files
-    data_files = [f for f in os.listdir('.') if f.startswith('f1_') and f.endswith('_laps_') and f.endswith('.csv')]
+    # Create ConsumedData directory if it doesn't exist
+    consumed_data_dir = './ConsumedData'
+    if not os.path.exists(consumed_data_dir):
+        os.makedirs(consumed_data_dir)
     
-    if not data_files:
+    # Define input files
+    aggregate_file = './f1_lapData_2020-2025.csv'
+    race_file = './f1_race_laps.csv'
+    practice_file = './f1_practice_laps.csv'
+    
+    # Read and combine data from available files
+    dataframes = []
+    
+    # Read aggregate file if it exists
+    if os.path.exists(aggregate_file):
+        df = pd.read_csv(aggregate_file)
+        df = standardize_team_names(df)
+        dataframes.append(df)
+    
+    # Read race file if it exists
+    if os.path.exists(race_file):
+        df = pd.read_csv(race_file)
+        df = standardize_team_names(df)
+        dataframes.append(df)
+        # Move file to ConsumedData directory
+        shutil.move(race_file, os.path.join(consumed_data_dir, os.path.basename(race_file)))
+    
+    # Read practice file if it exists
+    if os.path.exists(practice_file):
+        df = pd.read_csv(practice_file)
+        df = standardize_team_names(df)
+        dataframes.append(df)
+        # Move file to ConsumedData directory
+        shutil.move(practice_file, os.path.join(consumed_data_dir, os.path.basename(practice_file)))
+    
+    if not dataframes:
         print("❌ No F1 lap data files found. Please run data collection first.")
         return None
     
-    # Read all data files
-    dataframes = []
-    for file in data_files:
-        file_years = file.split('_')[-1].replace('.csv', '').split('-')
-        if years is None or any(int(y) in years for y in file_years):
-            df = pd.read_csv(file)
-            dataframes.append(df)
-    
-    if not dataframes:
-        print("❌ No data found for specified years.")
-        return None
-    
     # Combine the data
-    merged_df = combine_f1_lap_data(dataframes)
+    merged_df = pd.concat(dataframes, ignore_index=True)
     
-    if merged_df is None:
-        return None
-    
-    # Determine output filename
-    if years:
-        year_range = f"{min(years)}-{max(years)}"
-    else:
-        year_range = "all"
-    output_file = f'f1_lapData_{year_range}.csv'
+    # Remove duplicates based on Year, Track, Team, Driver, and LapNumber
+    merged_df = merged_df.drop_duplicates(subset=['Year', 'Track', 'Team', 'Driver', 'LapNumber'])
     
     # Save the combined data
-    merged_df.to_csv(output_file, index=False)
-    print(f"\n✅ Combined data saved to {output_file}")
+    merged_df.to_csv(aggregate_file, index=False)
+    print(f"\n✅ Combined data saved to {aggregate_file}")
     
-    return output_file
+    return aggregate_file
+
+def aggregate_median_lap_times(input_file='f1_lapData_2020-2025.csv', year=2024):
+    """
+    Aggregate median lap times for each session (FP1, FP2, FP3, Race) per driver per event.
+    
+    Parameters:
+    -----------
+    input_file : str, optional
+        Path to the input CSV file containing lap data. Defaults to 'f1_lapData_2020-2025.csv'.
+    year : int, optional
+        Year to filter the data for. Defaults to 2024.
+    
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame containing aggregated median lap times
+    """
+    try:
+        # Read the input file
+        df = pd.read_csv(input_file)
+        
+        # Filter for the specified year
+        df = df[df['Year'] == year]
+        
+        # Convert lap time columns to timedelta if they're strings
+        time_columns = ['FP1 Lap Time', 'FP2 Lap Time', 'FP3 Lap Time', 'Race Lap Time']
+        for col in time_columns:
+            if col in df.columns and df[col].dtype == 'object':
+                df[col] = pd.to_timedelta(df[col])
+        
+        # Group by Track, Team, and Driver, then calculate median for each session
+        grouped = df.groupby(['Track', 'Team', 'Driver']).agg({
+            'FP1 Lap Time': 'median',
+            'FP2 Lap Time': 'median',
+            'FP3 Lap Time': 'median',
+            'Race Lap Time': 'median'
+        }).reset_index()
+        
+        # Format the lap times to be more readable
+        for col in time_columns:
+            if col in grouped.columns:
+                grouped[col] = grouped[col].dt.total_seconds().round(3)
+        
+        # Sort by Track and Team
+        grouped = grouped.sort_values(['Track', 'Team', 'Driver'])
+        
+        return grouped
+        
+    except Exception as e:
+        print(f"Error processing data: {str(e)}")
+        return None
 
 ########### RUN PROGRAM ###########   
 if __name__ == "__main__":
-    # Prompt for session type
+    # Ask if user wants to run data collection
     print("\n=== F1 Data Collection Setup ===")
-    print("Choose session type to collect:")
-    print("1. Race sessions")
-    print("2. Practice sessions (FP1, FP2, FP3)")
-    print("3. Use default (Race)")
-    print("4. Combine existing practice and race data")
+    print("Would you like to collect new F1 data?")
+    print("1. Yes")
+    print("2. No")
     
-    session_choice = input("Enter your choice (1-4): ").strip()
+    collect_choice = input("Enter your choice (1-2): ").strip()
     
-    if session_choice == "4":
-        # Prompt for years to combine
-        print("\nChoose years to combine:")
-        print("1. 2024 (Current season)")
-        print("2. 2025 (Upcoming season)")
-        print("3. Both 2024 and 2025")
-        print("4. All available years")
-        print("5. Custom year(s)")
+    if collect_choice == "1":
+        # Prompt for session type
+        print("\nChoose session type to collect:")
+        print("1. Race sessions")
+        print("2. Practice sessions (FP1, FP2, FP3)")
+        print("3. Use default (Race)")
         
-        year_choice = input("Enter your choice (1-5): ").strip()
+        session_choice = input("Enter your choice (1-3): ").strip()
         
-        if year_choice == "1":
-            years = [2024]
-        elif year_choice == "2":
-            years = [2025]
-        elif year_choice == "3":
-            years = [2024, 2025]
-        elif year_choice == "4":
-            years = None  # Will use all available years
-        elif year_choice == "5":
-            custom_years = input("Enter years separated by commas (e.g., 2024,2025): ").strip()
-            years = [int(year.strip()) for year in custom_years.split(',')]
-        else:
-            years = [2024]  # Default
-            
-        output_file = combine_practice_and_race_times(years)
-    else:
-        # Original data collection code
         if session_choice == "1":
             sessions_to_collect = ['Race']
         elif session_choice == "2":
@@ -586,3 +658,69 @@ if __name__ == "__main__":
             print("\n=== Skipped Races Details ===")
             for race in skipped:
                 print(f"⚠️ {race}")
+    
+    # Ask if user wants to combine data
+    print("\nWould you like to combine F1 lap data?")
+    print("1. Yes")
+    print("2. No")
+    
+    combine_choice = input("Enter your choice (1-2): ").strip()
+    
+    if combine_choice == "1":
+        # Prompt for years to combine
+        print("\nChoose years to combine:")
+        print("1. 2024 (Current season)")
+        print("2. 2025 (Upcoming season)")
+        print("3. Both 2024 and 2025")
+        print("4. All available years")
+        print("5. Custom year(s)")
+        
+        year_choice = input("Enter your choice (1-5): ").strip()
+        
+        if year_choice == "1":
+            years = [2024]
+        elif year_choice == "2":
+            years = [2025]
+        elif year_choice == "3":
+            years = [2024, 2025]
+        elif year_choice == "4":
+            years = None  # Will use all available years
+        elif year_choice == "5":
+            custom_years = input("Enter years separated by commas (e.g., 2024,2025): ").strip()
+            years = [int(year.strip()) for year in custom_years.split(',')]
+        else:
+            years = [2024]  # Default
+            
+        output_file = combine_practice_and_race_times(years)
+
+    # Add option to aggregate median lap times
+    print("\nWould you like to aggregate median lap times?")
+    print("1. Yes")
+    print("2. No")
+    
+    aggregate_choice = input("Enter your choice (1-2): ").strip()
+    
+    if aggregate_choice == "1":
+        # Get the input file path
+        input_file = input("Enter the path to the lap data file (default: f1_lapData_2020-2025.csv): ").strip()
+        if not input_file:
+            input_file = 'f1_lapData_2020-2025.csv'
+        
+        # Get the year to analyze
+        year = input("Enter the year to analyze (default: 2024): ").strip()
+        if not year:
+            year = 2024
+        else:
+            year = int(year)
+        
+        # Aggregate the data
+        result = aggregate_median_lap_times(input_file, year)
+        
+        if result is not None:
+            print(f"\nMedian Lap Times for {year} Season:")
+            print(result.to_string(index=False))
+            
+            # Save to CSV
+            output_file = f'median_lap_times_{year}.csv'
+            result.to_csv(output_file, index=False)
+            print(f"\nResults saved to {output_file}")
